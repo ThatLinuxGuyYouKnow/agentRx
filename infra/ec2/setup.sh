@@ -22,7 +22,7 @@ sudo mkdir -p "$APP_DIR"
 sudo chown agentrx:agentrx "$APP_DIR"
 sudo -u agentrx git clone "$REPO" "$APP_DIR" 2>/dev/null || (cd "$APP_DIR" && sudo -u agentrx git pull --ff-only)
 sudo -u agentrx python3 -m venv "$APP_DIR/.venv"
-sudo -u agentrx "$APP_DIR/.venv/bin/pip install -r $APP_DIR/requirements.txt"
+sudo -u agentrx "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 
 # Secrets: copy your local .env up separately (never commit it):
 #   scp .env ubuntu@<host>:/tmp/agentrx.env && ssh ubuntu@<host> "sudo install -o agentrx -g agentrx -m 600 /tmp/agentrx.env /opt/agentrx/.env"
