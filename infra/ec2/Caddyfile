@@ -1,0 +1,5 @@
+# Caddy reverse proxy: automatic Let's Encrypt TLS (GPS needs https).
+# setup.sh swaps in $DOMAIN below (e.g. agentrx.duckdns.org, see ec2-deploy.md).
+agentrx.duckdns.org {
+	reverse_proxy 127.0.0.1:8000
+}

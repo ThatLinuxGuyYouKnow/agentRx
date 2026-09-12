@@ -1,0 +1,9 @@
+{
+  "Name": "agentrx-daily-sweeper",
+  "ScheduleExpression": "cron(0 9 * * ? *)",
+  "Description": "agentRx refill reminder daily sweeper: pings only when remind_date <= today",
+  "Target": {
+    "Command": "/home/ec2-user/myvenv/bin/python /opt/agentrx/scripts/sweeper.py",
+    "RetryPolicy": { "MaximumRetryAttempts": 1 }
+  }
+}

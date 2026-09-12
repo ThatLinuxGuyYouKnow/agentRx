@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgentRx</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,680&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root{
+    --ink: #10161C;
+    --amber: #E3A44C;
+    --amber-dim: #8A6A3E;
+    --sage: #7FA37D;
+    --slate-pin: #5B6B7A;
+    --paper: #F5F1E8;
+    --paper-ink: #1B1A17;
+    --paper-muted: #78705F;
+    --paper-line: #DED5C2;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    background:var(--ink);
+    font-family:'IBM Plex Sans', sans-serif;
+    overflow:hidden;
+  }
+  #stage{position:relative; width:100vw; height:100vh;}
+
+  /* ---------- MAP (Leaflet, heisted pattern from cairn MapScreen) ---------- */
+  #map-layer{ position:absolute; inset:0; background:var(--ink); }
+  #map{ position:absolute; inset:0; }
+  .leaflet-container{ background:var(--ink); font-family:'IBM Plex Sans', sans-serif; }
+
+  .rx-user-dot{
+    width:12px; height:12px; border-radius:50%;
+    background:var(--sage); position:relative;
+    box-shadow:0 0 0 3px rgba(127,163,125,.3);
+  }
+  .rx-user-dot::after{
+    content:''; position:absolute; inset:-3px; border-radius:50%;
+    border:2px solid var(--sage);
+    animation: rxpulse 2.4s ease-out infinite;
+  }
+  @keyframes rxpulse{
+    0%{ transform:scale(1); opacity:.7; }
+    100%{ transform:scale(3.2); opacity:0; }
+  }
+  .rx-pin{
+    width:16px; height:16px; border-radius:50%;
+    transition: transform .2s ease;
+  }
+  .rx-pin.in{ background:var(--amber); box-shadow:0 0 10px rgba(227,164,76,.8); }
+  .rx-pin.call{ background:transparent; border:3px solid var(--amber-dim); }
+  .rx-pin.out{ background:transparent; border:3px solid var(--slate-pin); }
+  .rx-pin.cand{ background:transparent; border:3px solid var(--sage); }
+  .rx-pin.best{ transform:scale(1.35); }
+  .rx-popup{ font-family:'IBM Plex Sans', sans-serif; font-size:13px; line-height:1.45; }
+  .rx-popup .t{ font-weight:600; }
+  .rx-popup .m{ font-family:'IBM Plex Mono', monospace; font-size:11.5px; color:#666; }
+  .rx-popup a{ color:#8a5a1d; }
+
+  /* ---------- BRAND MARK (top-left) ---------- */
+  #brand{
+    position:absolute; top:28px; left:32px;
+    display:flex; align-items:center; gap:10px;
+    color:#EDEAE2; user-select:none; z-index:500;
+    pointer-events:none;
+  }
+  #brand .mark{
+    width:30px; height:30px; border:1.5px solid var(--amber);
+    border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Fraunces', serif; font-weight:600; font-size:16px; color:var(--amber);
+  }
+  #brand .word{ font-family:'Fraunces', serif; font-weight:600; font-size:21px; letter-spacing:.01em; }
+  #brand .sub{
+    font-family:'IBM Plex Mono', monospace; font-size:11px; color:#828A93;
+    margin-left:2px; padding-left:10px; border-left:1px solid #34404B;
+  }
+  #board-toggle{
+    pointer-events:auto; cursor:pointer;
+    margin-left:12px; border:1px solid #34404B; background:transparent;
+    color:#EDEAE2; font-family:'IBM Plex Mono', monospace; font-size:11px;
+    padding:6px 12px; border-radius:999px;
+    transition: border-color .2s ease, color .2s ease;
+  }
+  #board-toggle:hover, #board-toggle.on{ border-color:var(--amber); color:var(--amber); }
+
+  /* ---------- BOARD (watchlist drawer, left) ---------- */
+  #board-panel{
+    position:absolute; top:76px; left:32px; bottom:110px;
+    width:340px; max-width:calc(100vw - 64px);
+    background:var(--paper); border-radius:16px;
+    box-shadow:0 20px 60px rgba(0,0,0,.45);
+    z-index:550; display:none; flex-direction:column; overflow:hidden;
+  }
+  #board-panel.open{ display:flex; }
+  #board-header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 16px 12px 18px; border-bottom:1px solid var(--paper-line);
+    flex-shrink:0;
+  }
+  #board-header .t{ font-family:'Fraunces', serif; font-weight:600; font-size:16.5px; color:var(--paper-ink); }
+  #board-header .s{ font-size:12px; color:var(--paper-muted); }
+  #board-list{ flex:1; overflow-y:auto; padding:12px 18px; display:flex; flex-direction:column; gap:4px; }
+  #board-list::-webkit-scrollbar{ width:6px; }
+  #board-list::-webkit-scrollbar-thumb{ background:#DAD0BC; border-radius:3px; }
+  .board-row{ padding:10px 2px; border-bottom:1px solid var(--paper-line); }
+  .board-row .r1{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .board-row .name{ font-size:14px; font-weight:600; color:var(--paper-ink); }
+  .stale-badge{
+    font-family:'IBM Plex Mono', monospace; font-size:10.5px;
+    padding:3px 9px; border-radius:999px; flex-shrink:0;
+  }
+  .stale-badge.stale{ background:#F3DDC4; color:#8a3c14; }
+  .stale-badge.fresh{ background:rgba(127,163,125,.18); color:#3f6b3e; }
+  .board-cells{ margin-top:6px; display:flex; flex-direction:column; gap:3px; }
+  .board-row .actions{ margin-top:8px; display:flex; gap:8px; }
+  #board-add{
+    padding:12px 18px 16px 18px; border-top:1px solid var(--paper-line); flex-shrink:0;
+    display:flex; gap:8px;
+  }
+  #board-add input{
+    border:1px solid var(--paper-line); background:transparent; border-radius:8px;
+    font-family:'IBM Plex Sans', sans-serif; font-size:13px; color:var(--paper-ink);
+    padding:8px 10px; outline:none; min-width:0;
+  }
+  #watch-drug{ flex:2; }
+  #watch-strength{ flex:1; }
+  #board-add button{
+    border:none; background:var(--ink); color:var(--amber);
+    font-family:'IBM Plex Sans', sans-serif; font-size:13px; font-weight:500;
+    padding:8px 14px; border-radius:8px; cursor:pointer; flex-shrink:0;
+  }
+
+  /* ---------- LEGEND (bottom-left) ---------- */
+  #legend{
+    position:absolute; bottom:28px; left:32px;
+    font-family:'IBM Plex Mono', monospace; font-size:12px; color:#9AA1A8;
+    display:flex; flex-direction:column; gap:7px; z-index:500;
+    pointer-events:none;
+  }
+  #legend .row{ display:flex; align-items:center; gap:8px; }
+  #legend .dot{ width:9px; height:9px; border-radius:50%; display:inline-block; }
+  #legend .dot.in{ background:var(--amber); }
+  #legend .dot.call{ background:transparent; border:2px solid var(--amber-dim); }
+  #legend .dot.out{ background:transparent; border:2px solid var(--slate-pin); }
+  #loc-line{ color:#6d757d; }
+
+  /* ---------- CHAT ---------- */
+  #chat-wrap{
+    position:absolute; bottom:24px; right:24px;
+    z-index:600;
+    display:flex; flex-direction:column; align-items:flex-end;
+  }
+  #chat-tab{
+    display:flex; align-items:center; gap:10px;
+    background:var(--paper); color:var(--paper-ink);
+    padding:13px 20px 13px 16px; border-radius:999px;
+    box-shadow:0 10px 30px rgba(0,0,0,.35);
+    cursor:pointer; border:none;
+    font-family:'IBM Plex Sans', sans-serif;
+    font-size:14.5px; font-weight:500;
+    transition: box-shadow .2s ease, transform .2s ease;
+  }
+  #chat-tab:hover{ box-shadow:0 12px 34px rgba(0,0,0,.45); transform:translateY(-1px); }
+  #chat-tab .tab-mark{
+    width:22px; height:22px; border-radius:50%;
+    background:var(--ink);
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Fraunces', serif; font-weight:600; font-size:12px; color:var(--amber);
+  }
+  #chat-tab .tab-status{
+    width:7px; height:7px; border-radius:50%; background:var(--sage);
+    box-shadow:0 0 0 3px rgba(127,163,125,.25);
+  }
+  #chat-panel{
+    width:390px; max-width:calc(100vw - 48px);
+    max-height:0; opacity:0;
+    background:var(--paper); border-radius:16px;
+    box-shadow:0 20px 60px rgba(0,0,0,.45);
+    overflow:hidden;
+    transition: max-height .45s cubic-bezier(.22,.68,0,1), opacity .3s ease, margin .45s ease;
+    margin-bottom:0; display:flex; flex-direction:column;
+  }
+  #chat-panel.open{ max-height:640px; opacity:1; margin-bottom:14px; }
+  #chat-header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 18px 14px 20px;
+    border-bottom:1px solid var(--paper-line); flex-shrink:0;
+  }
+  #chat-header .id{ display:flex; align-items:center; gap:10px; }
+  #chat-header .mark{
+    width:26px; height:26px; border-radius:50%; background:var(--ink);
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Fraunces', serif; font-weight:600; font-size:13px; color:var(--amber);
+    flex-shrink:0;
+  }
+  #chat-header .titles{ line-height:1.25; }
+  #chat-header .titles .t1{ font-family:'Fraunces', serif; font-weight:600; font-size:16.5px; color:var(--paper-ink); }
+  #chat-header .titles .t2{ font-size:12px; color:var(--paper-muted); }
+  #chat-header .close-btn{
+    background:none; border:none; cursor:pointer; color:var(--paper-muted);
+    width:26px; height:26px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    transition: background .2s ease, color .2s ease;
+  }
+  #chat-header .close-btn:hover{ background:#EAE3D3; color:var(--paper-ink); }
+  #chat-body{
+    flex:1; overflow-y:auto;
+    padding:18px 20px;
+    display:flex; flex-direction:column; gap:14px;
+    min-height:180px;
+  }
+  #chat-body::-webkit-scrollbar{ width:6px; }
+  #chat-body::-webkit-scrollbar-thumb{ background:#DAD0BC; border-radius:3px; }
+  .msg{ max-width:92%; font-size:14.5px; line-height:1.5; }
+  .msg.agent{ align-self:flex-start; color:var(--paper-ink); }
+  .msg.user{
+    align-self:flex-end; background:var(--ink); color:#F0EDE4;
+    padding:9px 13px; border-radius:12px 12px 3px 12px;
+  }
+  .msg.agent .bubble{ background:#EDE7D8; padding:10px 14px; border-radius:3px 12px 12px 12px; }
+  .msg.warn .bubble{ background:#F3DDC4; }
+  .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:2px; }
+  .chip{
+    border:1px solid var(--paper-line); background:transparent;
+    color:var(--paper-ink); font-family:'IBM Plex Sans', sans-serif;
+    font-size:13px; padding:7px 13px; border-radius:999px; cursor:pointer;
+    transition: border-color .2s ease, background .2s ease;
+  }
+  .chip:hover{ border-color:var(--amber); background:rgba(227,164,76,.08); }
+  .chip.chip-on{ border-color:var(--sage); background:rgba(127,163,125,.15); }
+  .cand-row{ cursor:pointer; border-radius:8px; }
+  .cand-row:hover{ background:rgba(227,164,76,.07); }
+  .cand-row.deselected{ opacity:.45; }
+  .tick{
+    width:16px; height:16px; border-radius:50%; flex-shrink:0;
+    background:var(--sage); position:relative;
+  }
+  .tick::after{
+    content:''; position:absolute; left:5px; top:2px;
+    width:4px; height:8px; border:solid #F5F1E8; border-width:0 2px 2px 0;
+    transform:rotate(40deg);
+  }
+  .tick.off{ background:transparent; border:2px solid var(--paper-line); }
+  .tick.off::after{ content:none; }
+  .typing{ display:flex; gap:4px; padding:12px 14px; background:#EDE7D8; border-radius:3px 12px 12px 12px; width:fit-content; }
+  .typing span{
+    width:5px; height:5px; border-radius:50%; background:#A79C87;
+    animation: bounce 1.2s infinite ease-in-out;
+  }
+  .typing span:nth-child(2){ animation-delay:.15s; }
+  .typing span:nth-child(3){ animation-delay:.3s; }
+  @keyframes bounce{ 0%,60%,100%{ transform:translateY(0); opacity:.5; } 30%{ transform:translateY(-4px); opacity:1; } }
+  .result-list{ display:flex; flex-direction:column; margin-top:6px; border-top:1px solid var(--paper-line); }
+  .result{ padding:11px 2px; border-bottom:1px solid var(--paper-line); }
+  .result .r1{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .result .left{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .result .status-dot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .result .status-dot.in{ background:var(--amber); }
+  .result .status-dot.call{ background:transparent; border:2px solid var(--amber-dim); }
+  .result .status-dot.out{ background:transparent; border:2px solid var(--slate-pin); }
+  .result .name{ font-size:13.5px; color:var(--paper-ink); font-weight:500; }
+  .result .meta{ font-family:'IBM Plex Mono', monospace; font-size:11.5px; color:var(--paper-muted); margin-top:2px; }
+  .result .dist{ font-family:'IBM Plex Mono', monospace; font-size:12.5px; color:var(--paper-ink); flex-shrink:0; }
+  .result .r2{ margin-top:6px; display:flex; gap:10px; align-items:center; }
+  .mini-btn{
+    border:1px solid var(--paper-line); background:transparent; color:var(--paper-ink);
+    font-family:'IBM Plex Mono', monospace; font-size:11px;
+    padding:4px 10px; border-radius:999px; cursor:pointer;
+  }
+  .mini-btn:hover{ border-color:var(--amber); }
+  .mini-btn.danger:hover{ border-color:#b3261e; color:#b3261e; }
+  .disclaimer{ font-family:'IBM Plex Mono', monospace; font-size:11px; color:var(--paper-muted); }
+  #chat-input-row{
+    display:flex; align-items:center; gap:10px;
+    padding:14px 16px; border-top:1px solid var(--paper-line);
+    flex-shrink:0;
+  }
+  #chat-input{
+    flex:1; border:none; background:transparent; outline:none;
+    font-family:'IBM Plex Sans', sans-serif; font-size:14px; color:var(--paper-ink);
+  }
+  #chat-input::placeholder{ color:#A79C87; }
+  #send-btn{
+    width:32px; height:32px; border-radius:50%; border:none;
+    background:var(--ink); color:var(--amber); cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    flex-shrink:0; transition: transform .15s ease, background .15s ease;
+  }
+  #send-btn:hover{ background:#1A232C; transform:scale(1.05); }
+  #send-btn svg{ width:14px; height:14px; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="map-layer"><div id="map"></div></div>
+
+  <div id="brand">
+    <div class="mark">Rx</div>
+    <div class="word">AgentRx</div>
+    <div class="sub">prescription finder</div>
+    <button id="board-toggle" aria-label="Toggle shortage board">📋 board</button>
+  </div>
+
+  <div id="board-panel">
+    <div id="board-header">
+      <div>
+        <div class="t">Shortage board</div>
+        <div class="s">watched drugs × last check</div>
+      </div>
+      <button class="close-btn" id="board-close" aria-label="Close board" style="background:none;border:none;cursor:pointer;color:var(--paper-muted);font-size:16px;">✕</button>
+    </div>
+    <div id="board-list"></div>
+    <div id="board-add">
+      <input id="watch-drug" type="text" placeholder="drug e.g. lisinopril" />
+      <input id="watch-strength" type="text" placeholder="10mg" />
+      <button id="watch-add-btn">Watch</button>
+    </div>
+  </div>
+
+  <div id="legend">
+    <div class="row"><span class="dot in"></span>In stock</div>
+    <div class="row"><span class="dot call"></span>Call ahead</div>
+    <div class="row"><span class="dot out"></span>Out of stock</div>
+    <div class="row" id="loc-line">locating…</div>
+  </div>
+
+  <div id="chat-wrap">
+    <div id="chat-panel">
+      <div id="chat-header">
+        <div class="id">
+          <div class="mark">Rx</div>
+          <div class="titles">
+            <div class="t1">AgentRx</div>
+            <div class="t2">Prescription finder</div>
+          </div>
+        </div>
+        <button class="close-btn" id="collapse-btn" aria-label="Collapse chat">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 1L11 11M11 1L1 11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div id="chat-body">
+        <div class="msg agent">
+          <div class="bubble">Tell me the medication and I'll check what's in stock nearby.</div>
+        </div>
+        <div class="chips" id="starter-chips">
+          <button class="chip" data-drug="atorvastatin 20mg x30">atorvastatin 20mg ×30</button>
+          <button class="chip" data-drug="Amoxicillin 500mg">Amoxicillin 500mg</button>
+          <button class="chip" data-drug="Albuterol inhaler">Albuterol inhaler</button>
+          <button class="chip" data-drug="watch lisinopril 10mg">Watch lisinopril 10mg</button>
+          <button class="chip" data-drug="__reminders">My reminders</button>
+        </div>
+      </div>
+      <div id="chat-input-row">
+        <input id="chat-input" type="text" placeholder="e.g. atorvastatin 20mg x30" />
+        <button id="send-btn" aria-label="Send">
+          <svg viewBox="0 0 20 20" fill="none"><path d="M18 2L2 9l6.5 2.5M18 2l-7.5 16-2-6.5M18 2L8.5 11.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <button id="chat-tab">
+      <span class="tab-mark">Rx</span>
+      <span>Ask AgentRx</span>
+      <span class="tab-status"></span>
+    </button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/app.js?v=4"></script>
+</body>
+</html>
