@@ -238,7 +238,12 @@ def api_board(org_id: str = "demo-org"):
 @app.get("/api/config")
 def api_config():
     """Public client config (CARTO key is a usage-tracked basemap key, not a secret)."""
-    return {"cartoApiKey": os.environ.get("CARTO_API_KEY", "")}
+    calle_key = os.environ.get("CALLE_API_KEY") or os.environ.get("CALL_E_API_KEY")
+    return {
+        "cartoApiKey": os.environ.get("CARTO_API_KEY", ""),
+        "calleMode": "live" if calle_key else "mock",
+        "demoStorefront": bool(os.environ.get("DEMO_STOREFRONT_PHONE")),
+    }
 
 
 if os.path.isdir(WEB_DIR):

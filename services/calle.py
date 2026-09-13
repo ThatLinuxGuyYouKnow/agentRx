@@ -1,13 +1,15 @@
 """CALL-E adapter: place_stock_call + get_call_result.
 
-Real mode (env CALL_E_API_KEY [+ CALL_E_BASE_URL / CALL_E_MCP_COMMAND]):
-  POST {base}/calls {to, script} -> {call_id}; GET {base}/calls/{id} -> result.
+Real mode (env CALLE_API_KEY):
+  POST {base}/v1/calls {task, recipients[{phones, region, locale}], result_schema}
+    -> {call_id}; GET {base}/v1/calls/{id} -> status + structured_result.
+  Docs: https://github.com/CALLE-AI/call-e-integrations
 Mock mode (no key): deterministic in-stock/price per pharmacy so the
-comparison table + video work without spending the 20-call budget.
+comparison table + video work without spending the call budget.
 
 Call script (per spec):
   "Hi, calling to check availability and cash price for {drug} {strength}
-   qty {qty}, no insurance, for pickup today?"
+   quantity {qty}, no insurance, for pickup today?"
 """
 
 from __future__ import annotations
@@ -25,6 +27,18 @@ CALL_SCRIPT_TEMPLATE = (
     "Hi, calling to check availability and cash price for {drug} {strength}, "
     "quantity {qty}, no insurance, for pickup today?"
 )
+
+RESULT_SCHEMA = {
+    "type": "object",
+    "required": ["in_stock"],
+    "properties": {
+        "in_stock": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "cash_price_usd": {"type": "number"},
+        "pickup_time": {"type": "string"},
+    },
+}
+
+DEFAULT_BASE_URL = "https://api.heycall-e.com"
 
 _mock_store: dict[str, dict] = {}
 
@@ -54,13 +68,28 @@ def _mock_result(call_id: str) -> CheckResult:
 
 
 def _base_url() -> str:
-    return os.environ.get("CALL_E_BASE_URL", "https://api.call-e.example/v1").rstrip("/")
+    return os.environ.get("CALLE_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+
+
+def _api_key() -> str | None:
+    return os.environ.get("CALLE_API_KEY") or os.environ.get("CALL_E_API_KEY")
+
+
+def _build_task(drug: str, strength: str, qty: int) -> str:
+    script = build_script(drug, strength, qty)
+    return (
+        f"Call the pharmacy. Say exactly: '{script}' Then ask whether the "
+        "medication is in stock, what the cash price is in US dollars, and "
+        "when it could be ready for pickup. Fill the result: in_stock "
+        "('yes'/'no'/'unknown'), cash_price_usd (number, omit if unknown), "
+        "pickup_time (short phrase like 'today by 5pm')."
+    )
 
 
 def place_stock_call(pharmacy: Pharmacy, drug: str, strength: str, qty: int) -> str:
     """Place one stock-check call. Returns call_id."""
-    script = build_script(drug, strength, qty)
-    if not os.environ.get("CALL_E_API_KEY"):
+    if not _api_key():
+        script = build_script(drug, strength, qty)
         call_id = f"mock-{uuid.uuid4().hex[:8]}"
         _mock_store[call_id] = {
             "pharmacy": pharmacy,
@@ -72,54 +101,96 @@ def place_stock_call(pharmacy: Pharmacy, drug: str, strength: str, qty: int) -> 
         }
         return call_id
     resp = requests.post(
-        f"{_base_url()}/calls",
-        headers={"Authorization": f"Bearer {os.environ['CALL_E_API_KEY']}"},
-        json={"to": pharmacy.phone, "script": script, "metadata": {"pharmacy_id": pharmacy.pharmacy_id}},
+        f"{_base_url()}/v1/calls",
+        headers={
+            "Authorization": f"Bearer {_api_key()}",
+            "Idempotency-Key": f"agentrx-{pharmacy.pharmacy_id}-{uuid.uuid4().hex[:12]}",
+        },
+        json={
+            "task": _build_task(drug, strength, qty),
+            "recipients": [
+                {"phones": [pharmacy.phone], "region": "US", "locale": "en-US"}
+            ],
+            "result_schema": RESULT_SCHEMA,
+            "metadata": {"pharmacy_id": pharmacy.pharmacy_id},
+        },
         timeout=30,
     )
     resp.raise_for_status()
-    return str(resp.json()["call_id"])
+    data = resp.json()
+    call_id = data.get("call_id") or data.get("id")
+    if not call_id:
+        raise ValueError(f"CALL-E create call returned no call_id: {data}")
+    return str(call_id)
 
 
-def get_call_result(call_id: str, timeout_s: int = 180, poll_s: int = 5) -> CheckResult:
+def _parse_result_schema(data: dict) -> tuple[bool, float | None, str | None]:
+    sr = data.get("structured_result") or {}
+    if not sr and data.get("recipients"):
+        recips = data["recipients"] or []
+        if recips:
+            sr = recips[0].get("structured_result") or {}
+    in_stock_raw = str(sr.get("in_stock", "unknown")).strip().lower()
+    in_stock = in_stock_raw == "yes"
+    price = sr.get("cash_price_usd")
+    price = round(float(price), 2) if price is not None else None
+    pickup = sr.get("pickup_time")
+    return in_stock, price, (str(pickup) if pickup else None)
+
+
+def _transcript_url(data: dict, call_id: str) -> str | None:
+    turns = []
+    for rec in data.get("recipients") or []:
+        for attempt in rec.get("attempts") or []:
+            turns.extend(attempt.get("transcript_turns") or [])
+    if not turns:
+        return None
+    lines = [f"{t.get('speaker', '?')}: {t.get('text', '')}" for t in turns]
+    return f"calle://{call_id}\n" + "\n".join(lines)
+
+
+def get_call_result(call_id: str, timeout_s: int = 300, poll_s: int = 10) -> CheckResult:
     """Poll until terminal result. Mock returns immediately."""
     if call_id in _mock_store:
         return _mock_result(call_id)
     deadline = time.time() + timeout_s
-    last: CheckResult | None = None
     while time.time() < deadline:
         resp = requests.get(
-            f"{_base_url()}/calls/{call_id}",
-            headers={"Authorization": f"Bearer {os.environ['CALL_E_API_KEY']}"},
+            f"{_base_url()}/v1/calls/{call_id}",
+            headers={"Authorization": f"Bearer {_api_key()}"},
             timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
         status = str(data.get("status", "")).lower()
-        if status in ("completed", "failed", "no-answer", "busy"):
-            ph = data.get("pharmacy") or {}
-            pharmacy = Pharmacy(
-                pharmacy_id=str(ph.get("pharmacy_id", call_id)),
-                name=str(ph.get("name", "Unknown")),
-                address=str(ph.get("address", "")),
-                phone=str(ph.get("phone", "")),
-                rating=float(ph.get("rating", 0) or 0),
-                user_ratings_total=int(ph.get("user_ratings_total", 0) or 0),
-                open_now=bool(ph.get("open_now", True)),
-                lat=float(ph.get("lat", 0) or 0),
-                lng=float(ph.get("lng", 0) or 0),
-            )
+        if status in ("completed", "failed", "no-answer", "busy", "cancelled"):
+            in_stock, price, pickup = _parse_result_schema(data)
+            notes = data.get("evidence") or []
+            if isinstance(notes, list):
+                notes = " | ".join(str(n) for n in notes)
             return CheckResult(
-                pharmacy=pharmacy,
-                in_stock=bool(data.get("in_stock", False)),
-                price=data.get("price"),
-                pickup_time=data.get("pickup_time"),
-                transcript_url=data.get("transcript_url"),
+                pharmacy=data.get("pharmacy") or _unknown_pharmacy(call_id),
+                in_stock=in_stock,
+                price=price,
+                pickup_time=pickup,
+                transcript_url=_transcript_url(data, call_id),
                 call_id=call_id,
-                call_status=status,
-                raw_notes=str(data.get("notes", "")),
+                call_status=status if status != "cancelled" else "failed",
+                raw_notes=str(notes or ""),
             )
         time.sleep(poll_s)
-    if last is not None:
-        return last
     raise TimeoutError(f"CALL-E result not ready for {call_id} after {timeout_s}s")
+
+
+def _unknown_pharmacy(call_id: str) -> Pharmacy:
+    return Pharmacy(
+        pharmacy_id=call_id,
+        name="Unknown pharmacy",
+        address="",
+        phone="",
+        rating=0.0,
+        user_ratings_total=0,
+        open_now=True,
+        lat=0.0,
+        lng=0.0,
+    )

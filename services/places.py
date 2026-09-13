@@ -201,13 +201,41 @@ def _parse_new_place(p: dict, lat: float, lng: float, delivery: bool = False) ->
         return None
 
 
+def _demo_storefront(lat: float, lng: float) -> Pharmacy | None:
+    """Own storefront for the live demo: env DEMO_STOREFRONT_PHONE (E.164).
+
+    Injected as the first candidate in both live and mock mode so the call
+    always has a known-good target. Name/label via DEMO_STOREFRONT_NAME.
+    """
+    phone = os.environ.get("DEMO_STOREFRONT_PHONE", "").strip()
+    if not phone:
+        return None
+    return Pharmacy(
+        pharmacy_id="demo-storefront",
+        name=os.environ.get("DEMO_STOREFRONT_NAME", "AgentRx Demo Pharmacy"),
+        address="Demo storefront (you)",
+        phone=phone,
+        rating=4.8,
+        user_ratings_total=99,
+        open_now=True,
+        lat=round(lat + 0.004, 6),
+        lng=round(lng - 0.004, 6),
+        distance_km=0.6,
+    )
+
+
 def find_pharmacies(
     lat: float, lng: float, radius_km: float = 5, delivery: bool = False
 ) -> list[Pharmacy]:
     """Top-3 reputable open pharmacies within radius_km. Mock if no API key."""
+    demo = _demo_storefront(lat, lng)
     if not os.environ.get("GOOGLE_PLACES_API_KEY"):
-        return _mock(lat, lng)
-    try:
-        return _live(lat, lng, radius_km, delivery)
-    except Exception:
-        return _mock(lat, lng)  # fail soft: demo continues
+        found = _mock(lat, lng)
+    else:
+        try:
+            found = _live(lat, lng, radius_km, delivery)
+        except Exception:
+            found = _mock(lat, lng)  # fail soft: demo continues
+    if demo is not None:
+        found = [demo] + [p for p in found if p.pharmacy_id != demo.pharmacy_id][:2]
+    return found
