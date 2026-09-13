@@ -143,6 +143,26 @@ def test_get_call_result_completed(monkeypatch):
     assert "Staff confirmed stock." in r.raw_notes
 
 
+def test_region_inferred_from_country_code():
+    assert calle._region_for("+15551234567") == "US"
+    assert calle._region_for("+2349079005996") == "NG"
+    assert calle._region_for("+447700900123") == "GB"
+    assert calle._region_for("+999unknown") == "US"
+
+
+def test_place_call_real_mode_ng_region(monkeypatch):
+    monkeypatch.setenv("CALLE_API_KEY", "k")
+    seen = {}
+    monkeypatch.setattr(
+        calle.requests,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: seen.update(json=json)
+        or _FakeResp({"id": "c1"}),
+    )
+    place_stock_call(_pharmacy(phone="+2349079005996"), "d", "s", 1)
+    assert seen["json"]["recipients"][0]["region"] == "NG"
+
+
 def test_demo_storefront_injected_first_live(monkeypatch):
     monkeypatch.delenv("GOOGLE_PLACES_API_KEY", raising=False)  # mock path is enough
     monkeypatch.setenv("DEMO_STOREFRONT_PHONE", "+15559990000")

@@ -40,6 +40,21 @@ RESULT_SCHEMA = {
 
 DEFAULT_BASE_URL = "https://api.heycall-e.com"
 
+# CALL-E region/line routing by calling code (subset of their supported list).
+_REGION_BY_CC = [
+    ("+1", "US"), ("+44", "GB"), ("+234", "NG"), ("+65", "SG"), ("+91", "IN"),
+    ("+61", "AU"), ("+49", "DE"), ("+33", "FR"), ("+52", "MX"), ("+55", "BR"),
+    ("+81", "JP"), ("+254", "KE"), ("+27", "ZA"), ("+971", "AE"), ("+60", "MY"),
+]
+_DEFAULT_REGION = "US"
+
+
+def _region_for(phone: str) -> str:
+    for cc, region in _REGION_BY_CC:
+        if phone.startswith(cc):
+            return region
+    return _DEFAULT_REGION
+
 _mock_store: dict[str, dict] = {}
 
 
@@ -109,7 +124,11 @@ def place_stock_call(pharmacy: Pharmacy, drug: str, strength: str, qty: int) -> 
         json={
             "task": _build_task(drug, strength, qty),
             "recipients": [
-                {"phones": [pharmacy.phone], "region": "US", "locale": "en-US"}
+                {
+                    "phones": [pharmacy.phone],
+                    "region": _region_for(pharmacy.phone),
+                    "locale": "en-US",
+                }
             ],
             "result_schema": RESULT_SCHEMA,
             "metadata": {"pharmacy_id": pharmacy.pharmacy_id},
