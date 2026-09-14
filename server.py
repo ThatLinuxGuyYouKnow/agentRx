@@ -164,10 +164,16 @@ def api_delete_reminder(reminder_id: int):
 
 @app.post("/api/sweep")
 def api_sweep():
+    from agent import coordinator as coord_mod
+
     return {
         "reminder_sweep": reminder_svc.sweep(),
         "stale_watches": {
             org: watch_svc.stale_watches(org) for org in _orgs_with_watches()
+        },
+        # Good Neighbor background pass: call plans proposed, never placed.
+        "board_sweep": {
+            org: coord_mod.run_board_sweep(org) for org in _orgs_with_watches()
         },
     }
 
@@ -225,12 +231,13 @@ class WatchRequest(BaseModel):
     qty: int = 30
     radius_km: float = 5
     delivery: bool = False
+    check_every_days: int = 7
 
 
 @app.post("/api/watchlist")
 def api_add_watch(req: WatchRequest):
     return watch_svc.add_watch(req.org_id, req.drug, req.strength, req.qty,
-                               req.radius_km, req.delivery)
+                               req.radius_km, req.delivery, req.check_every_days)
 
 
 @app.get("/api/watchlist")
@@ -243,6 +250,19 @@ def api_remove_watch(watch_id: int, org_id: str = "demo-org"):
     if not watch_svc.remove_watch(watch_id, org_id):
         raise HTTPException(404, "watch not found")
     return {"deleted": watch_id}
+
+
+class WatchUpdate(BaseModel):
+    check_every_days: int
+
+
+@app.patch("/api/watchlist/{watch_id}")
+def api_update_watch(watch_id: int, req: WatchUpdate, org_id: str = "demo-org"):
+    """Edit a watch's re-check cadence (e.g. every 5 days)."""
+    row = watch_svc.update_watch(watch_id, org_id, req.check_every_days)
+    if row is None:
+        raise HTTPException(404, "watch not found")
+    return row
 
 
 @app.get("/api/board")

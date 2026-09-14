@@ -1,8 +1,12 @@
 """Strands agent wiring (Agents-for-Humans track: Strands + AgentCore).
 
+Good Neighbor graph in :mod:`agent.coordinator`: a supervisor with
+finder / caller / board sub-agents (via ``Agent.as_tool()``) over shared
+domain tools.
+
 Model: Bedrock amazon.nova-micro (default) or anthropic.claude-3-haiku.
-Falls back to a no-LLM passthrough that calls the orchestrator directly
-when Bedrock creds are absent, so the demo never breaks.
+Without Bedrock creds the same graph runs on the deterministic offline
+model through the real Strands event loop, so the demo never breaks.
 
 OUT of scope guardrails: the system prompt forbids ordering, payment,
 Rx submission, allergy/interaction consults, and dosage advice.
@@ -12,9 +16,10 @@ from __future__ import annotations
 
 import os
 
-SYSTEM_PROMPT = """You are agentRx, a pharmacy stock-check helper.
-You may ONLY: find nearby pharmacies, place stock/price check calls, summarize
-results in a comparison table, and set refill reminders.
+SYSTEM_PROMPT = """You are agentRx, the Good Neighbor refill coordinator for a
+community org (senior center / clinic / mutual-aid group). You may ONLY:
+find nearby pharmacies, propose call plans, summarize the shortage board,
+and set refill reminders.
 NEVER: order medication, take payment, accept Rx numbers, give allergy /
 interaction / dosage advice. End every answer with exactly:
 "Info only, confirm with pharmacist/doctor."
@@ -25,45 +30,20 @@ MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-micro-v1:0")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 
-def build_agent():
-    """Build the Strands agent. Raises ImportError/RuntimeError if unusable."""
-    from strands import Agent, tool
+def build_agent(org_id: str = "demo-org", lat: float = 40.7128, lng: float = -74.0060,
+                history: list | None = None):
+    """Build the supervisor Agent of the Good Neighbor graph."""
+    from agent import coordinator as coord
 
-    from agent.tools import (
-        find_pharmacies as _find,
-        get_call_result as _get,
-        place_stock_call as _place,
-        set_reminder as _remind,
-    )
+    return coord.build_graph(org_id, lat, lng, history)["coordinator"]
 
-    @tool
-    def find_pharmacies(lat: float, lng: float, radius_km: float = 5, delivery: bool = False) -> list[dict]:
-        """Find top-3 reputable open pharmacies within radius_km. delivery=True prefers delivery options."""
-        return [p.to_dict() for p in _find(lat, lng, radius_km, delivery)]
 
-    @tool
-    def place_stock_call(pharmacy_id: str, drug: str, strength: str, qty: int) -> str:
-        """Place a stock/price check call. Returns call_id."""
-        return _place(pharmacy_id, drug, strength, qty)
+def build_graph(org_id: str = "demo-org", lat: float = 40.7128,
+                lng: float = -74.0060, history: list | None = None):
+    """Full multi-agent graph (finder / caller / board / coordinator)."""
+    from agent import coordinator as coord
 
-    @tool
-    def get_call_result(call_id: str) -> dict:
-        """Fetch a structured stock-check result for call_id."""
-        return _get(call_id).to_dict()
-
-    @tool
-    def set_reminder(user_id: str, drug: str, days_supply: int, last_date: str) -> dict:
-        """Set a refill reminder (remind = last_date + days_supply - 7)."""
-        return _remind(user_id, drug, days_supply, last_date).to_dict()
-
-    from strands.models import BedrockModel
-
-    model = BedrockModel(model_id=MODEL_ID, region_name=AWS_REGION)
-    return Agent(
-        model=model,
-        system_prompt=SYSTEM_PROMPT,
-        tools=[find_pharmacies, place_stock_call, get_call_result, set_reminder],
-    )
+    return coord.build_graph(org_id, lat, lng, history)
 
 
 def agent_available() -> bool:

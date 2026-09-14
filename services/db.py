@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS watched (
     qty INTEGER NOT NULL DEFAULT 30,
     radius_km REAL NOT NULL DEFAULT 5,
     delivery INTEGER NOT NULL DEFAULT 0,
+    check_every_days INTEGER NOT NULL DEFAULT 7,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -76,10 +77,23 @@ def connect(db_path: str | None = None):
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn) -> None:
+    """Lightweight migrations for DBs created before a schema change."""
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(watched)").fetchall()}
+        if "check_every_days" not in cols:
+            conn.execute(
+                "ALTER TABLE watched ADD COLUMN check_every_days INTEGER NOT NULL DEFAULT 7"
+            )
+    except Exception:
+        pass  # fresh DBs already have the column; never break connect()
 
 
 def dict_rows(rows) -> list[dict[str, Any]]:

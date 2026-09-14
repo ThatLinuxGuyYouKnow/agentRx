@@ -582,15 +582,18 @@
       .then(function (rows) {
         typing.remove();
         if (!rows.length) {
-          addAgentBubble('Watchlist is empty. Say “watch lisinopril 10mg” and I’ll track it.');
+          addAgentBubble('Watchlist is empty. Say “watch lisinopril 10mg every 7 days” and I’ll track it on that cadence.');
           return;
         }
         var html = rows.map(function (row) {
           var w = row.watch;
           var label = esc(w.drug + (w.strength ? ' ' + w.strength : ''));
+          var every = row.interval_days || w.check_every_days || 7;
           var head = row.stale
             ? '<span class="meta" style="color:#b3261e">stale — re-check?</span>'
             : '<span class="meta">checked ' + esc((row.snapshot.checked_at || '').slice(0, 10)) + '</span>';
+          var sched = '<div class="meta">🔁 every ' + every + 'd' +
+            (row.next_check ? ' · next due ' + esc(row.next_check) : ' · due now') + '</div>';
           var cells = '';
           if (row.snapshot && row.snapshot.result && row.snapshot.result.results) {
             cells = row.snapshot.result.results.map(function (r) {
@@ -603,7 +606,7 @@
             cells = '<div class="meta">no checks yet</div>';
           }
           return '<div class="result"><div class="r1"><div class="left"><span class="name">' + label + '</span></div>' + head + '</div>' +
-            cells +
+            sched + cells +
             '<div class="r2"><button class="mini-btn" data-act="recheck" data-watch-id="' + w.id + '">re-check</button></div></div>';
         }).join('');
         addAgentBubble('Shortage board:<div class="result-list">' + html + '</div>');
@@ -744,15 +747,19 @@
       .then(function (r) { return r.json(); })
       .then(function (rows) {
         if (!rows.length) {
-          boardList.innerHTML = '<div class="meta" style="font-family:IBM Plex Mono,monospace;font-size:12px;color:#78705F">Nothing watched yet — add a drug below or say “watch …” in chat.</div>';
+          boardList.innerHTML = '<div class="meta" style="font-family:IBM Plex Mono,monospace;font-size:12px;color:#78705F">Nothing watched yet — add a drug below (set how often we run out) or say “watch … every 5 days” in chat.</div>';
           return;
         }
         boardList.innerHTML = rows.map(function (row) {
           var w = row.watch;
           var label = esc(w.drug + (w.strength ? ' ' + w.strength : ''));
+          var every = row.interval_days || w.check_every_days || 7;
           var badge = row.stale
-            ? '<span class="stale-badge stale">stale</span>'
+            ? '<span class="stale-badge stale">stale · due</span>'
             : '<span class="stale-badge fresh">' + esc((row.snapshot.checked_at || '').slice(0, 10)) + '</span>';
+          var sched = row.next_check
+            ? '🔁 every ' + every + 'd · next due ' + esc(row.next_check)
+            : '🔁 every ' + every + 'd · due now — approve a re-check';
           var cells = '';
           if (row.snapshot && row.snapshot.result && row.snapshot.result.results) {
             cells = row.snapshot.result.results.map(function (r) {
@@ -765,14 +772,29 @@
           } else {
             cells = '<div class="meta" style="font-family:IBM Plex Mono,monospace;font-size:11.5px;color:#78705F">no checks yet</div>';
           }
+          var opts = [3, 5, 7, 14, 30].map(function (n) {
+            return '<option value="' + n + '"' + (n === every ? ' selected' : '') + '>every ' + n + 'd</option>';
+          }).join('');
           return '<div class="board-row"><div class="r1"><span class="name">' + label + '</span>' + badge + '</div>' +
+            '<div class="sched-line">' + sched + '</div>' +
             '<div class="board-cells">' + cells + '</div>' +
             '<div class="actions"><button class="mini-btn" data-act="recheck" data-watch-id="' + w.id + '">re-check</button>' +
+            '<select class="sched-sel" data-watch-id="' + w.id + '" title="Re-check cadence">' + opts + '</select>' +
             '<button class="mini-btn danger" data-act="unwatch" data-watch-id="' + w.id + '">unwatch</button></div></div>';
         }).join('');
       })
       .catch(function () { boardList.innerHTML = 'Could not load board.'; });
   }
+
+  boardList.addEventListener('change', function (e) {
+    var sel = e.target.closest('select.sched-sel');
+    if (!sel) return;
+    var wid = parseInt(sel.dataset.watchId, 10);
+    fetch('/api/watchlist/' + wid + '?org_id=' + encodeURIComponent(ORG_ID), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ check_every_days: parseInt(sel.value, 10) }),
+    }).then(loadBoardPanel);
+  });
 
   boardList.addEventListener('click', function (e) {
     var btn = e.target.closest('button');
@@ -806,10 +828,11 @@
   document.getElementById('watch-add-btn').addEventListener('click', function () {
     var drug = document.getElementById('watch-drug').value.trim();
     var strength = document.getElementById('watch-strength').value.trim();
+    var every = parseInt(document.getElementById('watch-every').value, 10) || 7;
     if (!drug) return;
     fetch('/api/watchlist', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ org_id: ORG_ID, drug: drug, strength: strength }),
+      body: JSON.stringify({ org_id: ORG_ID, drug: drug, strength: strength, check_every_days: every }),
     }).then(function () {
       document.getElementById('watch-drug').value = '';
       document.getElementById('watch-strength').value = '';

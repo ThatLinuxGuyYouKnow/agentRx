@@ -120,7 +120,13 @@
   .stale-badge.stale{ background:#F3DDC4; color:#8a3c14; }
   .stale-badge.fresh{ background:rgba(127,163,125,.18); color:#3f6b3e; }
   .board-cells{ margin-top:6px; display:flex; flex-direction:column; gap:3px; }
-  .board-row .actions{ margin-top:8px; display:flex; gap:8px; }
+  .board-row .actions{ margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .sched-line{ font-family:'IBM Plex Mono', monospace; font-size:11px; color:#78705F; margin-top:6px; }
+  .sched-sel{
+    border:1px solid var(--paper-line); background:transparent; color:var(--paper-ink);
+    font-family:'IBM Plex Mono', monospace; font-size:11px;
+    padding:4px 8px; border-radius:999px; cursor:pointer; outline:none;
+  }
   #board-add{
     padding:12px 18px 16px 18px; border-top:1px solid var(--paper-line); flex-shrink:0;
     display:flex; gap:8px;
@@ -132,6 +138,7 @@
   }
   #watch-drug{ flex:2; }
   #watch-strength{ flex:1; }
+  #watch-every{ flex:0 0 58px; }
   #board-add button{
     border:none; background:var(--ink); color:var(--amber);
     font-family:'IBM Plex Sans', sans-serif; font-size:13px; font-weight:500;
@@ -331,7 +338,7 @@
   <div id="brand">
     <img class="mark-img" src="/static/logo.png" alt="AgentRx logo" />
     <div class="word">AgentRx</div>
-    <div class="sub">prescription finder</div>
+    <div class="sub">community refill board</div>
     <div class="sub" id="mock-badge" style="display:none;border-color:#7FA37D;color:#7FA37D;">mock calls</div>
     <button id="board-toggle" aria-label="Toggle shortage board">📋 board</button>
     <button id="theme-toggle" aria-label="Toggle light mode" title="Toggle light / dark">☀️</button>
@@ -349,6 +356,7 @@
     <div id="board-add">
       <input id="watch-drug" type="text" placeholder="drug e.g. lisinopril" />
       <input id="watch-strength" type="text" placeholder="10mg" />
+      <input id="watch-every" type="number" min="1" max="90" value="7" title="Re-check every N days" />
       <button id="watch-add-btn">Watch</button>
     </div>
   </div>
@@ -367,7 +375,7 @@
           <img class="mark-img" src="/static/logo.png" alt="AgentRx logo" />
           <div class="titles">
             <div class="t1">AgentRx</div>
-            <div class="t2">Prescription finder</div>
+            <div class="t2">Community refill board</div>
           </div>
         </div>
         <button class="close-btn" id="collapse-btn" aria-label="Collapse chat">
@@ -376,13 +384,13 @@
       </div>
       <div id="chat-body">
         <div class="msg agent">
-          <div class="bubble">Tell me the medication and I'll check what's in stock nearby.</div>
+          <div class="bubble">Tell me the medication and I'll check what's in stock nearby — or say “board” to see what our community is watching.</div>
         </div>
         <div class="chips" id="starter-chips">
           <button class="chip" data-drug="atorvastatin 20mg x30">atorvastatin 20mg ×30</button>
           <button class="chip" data-drug="Amoxicillin 500mg">Amoxicillin 500mg</button>
           <button class="chip" data-drug="Albuterol inhaler">Albuterol inhaler</button>
-          <button class="chip" data-drug="watch lisinopril 10mg">Watch lisinopril 10mg</button>
+          <button class="chip" data-drug="watch lisinopril 10mg every 7 days">Watch lisinopril · every 7d</button>
           <button class="chip" data-drug="__reminders">My reminders</button>
         </div>
       </div>
