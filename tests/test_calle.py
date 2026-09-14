@@ -173,7 +173,7 @@ def test_get_call_result_completed(monkeypatch):
 
 def test_region_inferred_from_country_code():
     assert calle._region_for("+15551234567") == "US"
-    assert calle._region_for("+2349079005996") == "NG"
+    assert calle._region_for("+2347000000000") == "NG"  # synthetic fixture, never dialed
     assert calle._region_for("+447700900123") == "GB"
     assert calle._region_for("+999unknown") == "US"
 
@@ -187,7 +187,7 @@ def test_place_call_real_mode_ng_region(monkeypatch):
         lambda url, headers=None, json=None, timeout=None: seen.update(json=json)
         or _FakeResp({"id": "c1"}),
     )
-    place_stock_call(_pharmacy(phone="+2349079005996"), "d", "s", 1)
+    place_stock_call(_pharmacy(phone="+2347000000000"), "d", "s", 1)  # synthetic fixture, never dialed
     assert seen["json"]["recipients"][0]["region"] == "NG"
 
 
