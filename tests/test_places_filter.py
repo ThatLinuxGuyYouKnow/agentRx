@@ -111,3 +111,22 @@ def test_delivery_search_uses_text_endpoint_and_flags(monkeypatch):
     res = find_pharmacies(40.0, -74.0, radius_km=2, delivery=True)
     assert seen["url"].endswith("places:searchText")
     assert len(res) == 1 and res[0].delivery is True
+
+
+def test_force_mock_ignores_live_key(monkeypatch):
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "test-key")
+    monkeypatch.setenv("AGENTRX_MOCK", "1")
+
+    def no_http(*a, **k):
+        raise AssertionError("no HTTP in forced mock")
+
+    monkeypatch.setattr(places_mod.requests, "post", no_http)
+    res = find_pharmacies(40.7128, -74.0060)
+    assert len(res) == 3
+    assert all(p.pharmacy_id.startswith("mock-") for p in res)
+
+
+def test_mock_delivery_flag_passthrough(monkeypatch):
+    monkeypatch.delenv("GOOGLE_PLACES_API_KEY", raising=False)
+    assert all(p.delivery for p in find_pharmacies(40.0, -74.0, delivery=True))
+    assert not any(p.delivery for p in find_pharmacies(40.0, -74.0))

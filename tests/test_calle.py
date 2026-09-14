@@ -8,6 +8,7 @@ from services.calle import (
     _parse_result_schema,
     _transcript_url,
     get_call_result,
+    get_transcript_text,
     place_stock_call,
 )
 from services.places import find_pharmacies
@@ -28,8 +29,10 @@ def _pharmacy(pid="demo-storefront", phone="+15551234567"):
 
 
 class _FakeResp:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
 
     def raise_for_status(self):
         pass
@@ -81,6 +84,31 @@ def test_place_call_mock_mode_no_key(monkeypatch):
     assert cid.startswith("mock-")
     r = get_call_result(cid)
     assert r.call_status == "completed"
+
+
+def test_force_mock_overrides_live_key(monkeypatch):
+    monkeypatch.setenv("CALLE_API_KEY", "live-key")
+    monkeypatch.setenv("AGENTRX_MOCK", "1")
+
+    def no_http(*a, **k):
+        raise AssertionError("no HTTP in forced mock")
+
+    monkeypatch.setattr(calle.requests, "post", no_http)
+    monkeypatch.setattr(calle.requests, "get", no_http)
+    cid = place_stock_call(_pharmacy(), "paracetamol", "", 30)
+    assert cid.startswith("mock-")
+    r = get_call_result(cid)
+    assert r.call_status == "completed" and r.in_stock is True
+
+
+def test_mock_oos_override(monkeypatch):
+    monkeypatch.delenv("CALLE_API_KEY", raising=False)
+    monkeypatch.delenv("CALL_E_API_KEY", raising=False)
+    monkeypatch.setenv("AGENTRX_MOCK_OOS", "shortage-demo")
+    cid = place_stock_call(_pharmacy(), "shortage-demo-xr", "", 30)
+    assert get_call_result(cid).in_stock is False
+    cid2 = place_stock_call(_pharmacy(), "paracetamol", "", 30)
+    assert get_call_result(cid2).in_stock is True  # override is selective
 
 
 def test_parse_result_schema_structured():
@@ -178,3 +206,43 @@ def test_demo_storefront_absent_without_env(monkeypatch):
     monkeypatch.delenv("DEMO_STOREFRONT_PHONE", raising=False)
     res = find_pharmacies(40.7128, -74.0060)
     assert all(p.pharmacy_id != "demo-storefront" for p in res)
+
+
+def test_mock_transcript_dialogue(monkeypatch):
+    monkeypatch.delenv("CALLE_API_KEY", raising=False)
+    monkeypatch.delenv("CALL_E_API_KEY", raising=False)
+    cid = place_stock_call(_pharmacy(), "paracetamol", "", 30)
+    t = get_transcript_text(cid)
+    assert "Agent:" in t and "Pharmacy:" in t
+    assert "paracetamol" in t and "$46.39" in t
+
+
+def test_mock_transcript_oos(monkeypatch):
+    monkeypatch.delenv("CALLE_API_KEY", raising=False)
+    monkeypatch.delenv("CALL_E_API_KEY", raising=False)
+    monkeypatch.setenv("AGENTRX_MOCK_OOS", "shortage-demo")
+    cid = place_stock_call(_pharmacy(), "shortage-demo", "", 30)
+    t = get_transcript_text(cid)
+    assert "Pharmacy:" in t and "don't have" in t
+
+
+def test_transcript_unknown_call_without_key():
+    assert get_transcript_text("nope-123") is None
+
+
+def test_mock_pickup_varies_but_stable(monkeypatch):
+    from services.calle import MOCK_PICKUPS
+
+    monkeypatch.delenv("CALLE_API_KEY", raising=False)
+    monkeypatch.delenv("CALL_E_API_KEY", raising=False)
+    seen = set()
+    for pid in ("mock-cvs-main", "mock-walgreens-oak", "mock-riteaid-pine"):
+        cid = place_stock_call(_pharmacy(pid), "atorvastatin", "", 30)
+        r = get_call_result(cid)
+        if r.in_stock:
+            assert r.pickup_time in MOCK_PICKUPS
+            seen.add(r.pickup_time)
+        # deterministic: same pharmacy+drug always agrees with itself
+        cid2 = place_stock_call(_pharmacy(pid), "atorvastatin", "", 30)
+        assert get_call_result(cid2).pickup_time == r.pickup_time
+    assert len(seen) >= 2  # comparison spread across pharmacies

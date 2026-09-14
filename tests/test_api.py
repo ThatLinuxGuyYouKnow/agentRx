@@ -70,3 +70,24 @@ def test_email_summary_unconfigured():
         json={"to_email": "x@y.z", "drug": "atorvastatin", "summary": "- a: in stock"},
     )
     assert r.status_code == 501
+
+
+def test_config_reports_forced_mock(monkeypatch):
+    monkeypatch.setenv("CALLE_API_KEY", "live-key")
+    monkeypatch.setenv("AGENTRX_MOCK", "1")
+    data = client.get("/api/config").json()
+    assert data["calleMode"] == "mock" and data["mock"] is True
+
+
+def test_transcript_endpoint_serves_mock():
+    cands = client.post("/api/pharmacies", json={"lat": 40.7, "lng": -74.0, "radius_km": 5}).json()
+    out = client.post(
+        "/api/check",
+        json={"drug": "paracetamol", "strength": "", "qty": 30,
+              "pharmacies": cands["pharmacies"][:1]},
+    ).json()
+    call_id = out["results"][0]["call_id"]
+    assert call_id.startswith("mock-")
+    t = client.get(f"/api/calls/{call_id}/transcript").json()
+    assert "Agent:" in t["transcript"] and "Pharmacy:" in t["transcript"]
+    assert client.get("/api/calls/nope-123/transcript").status_code == 404

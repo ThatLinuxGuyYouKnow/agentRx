@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>AgentRx</title>
+<link rel="icon" type="image/png" href="/static/favicon.png" />
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,680&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -74,6 +76,7 @@
     display:flex; align-items:center; justify-content:center;
     font-family:'Fraunces', serif; font-weight:600; font-size:16px; color:var(--amber);
   }
+  #brand .mark-img{ width:33px; height:33px; object-fit:contain; }
   #brand .word{ font-family:'Fraunces', serif; font-weight:600; font-size:21px; letter-spacing:.01em; }
   #brand .sub{
     font-family:'IBM Plex Mono', monospace; font-size:11px; color:#828A93;
@@ -172,6 +175,7 @@
     display:flex; align-items:center; justify-content:center;
     font-family:'Fraunces', serif; font-weight:600; font-size:12px; color:var(--amber);
   }
+  #chat-tab .tab-mark-img{ width:24px; height:24px; object-fit:contain; }
   #chat-tab .tab-status{
     width:7px; height:7px; border-radius:50%; background:var(--sage);
     box-shadow:0 0 0 3px rgba(127,163,125,.25);
@@ -198,6 +202,7 @@
     font-family:'Fraunces', serif; font-weight:600; font-size:13px; color:var(--amber);
     flex-shrink:0;
   }
+  #chat-header .mark-img{ width:28px; height:28px; object-fit:contain; flex-shrink:0; }
   #chat-header .titles{ line-height:1.25; }
   #chat-header .titles .t1{ font-family:'Fraunces', serif; font-weight:600; font-size:16.5px; color:var(--paper-ink); }
   #chat-header .titles .t2{ font-size:12px; color:var(--paper-muted); }
@@ -267,6 +272,9 @@
   .result .meta{ font-family:'IBM Plex Mono', monospace; font-size:11.5px; color:var(--paper-muted); margin-top:2px; }
   .result .dist{ font-family:'IBM Plex Mono', monospace; font-size:12.5px; color:var(--paper-ink); flex-shrink:0; }
   .result .r2{ margin-top:6px; display:flex; gap:10px; align-items:center; }
+  .tx{ margin-top:6px; border-left:2px solid var(--amber); padding:6px 0 6px 10px; display:flex; flex-direction:column; gap:4px; }
+  .tx-turn{ font-family:'IBM Plex Mono', monospace; font-size:11.5px; color:var(--paper-muted); }
+  .tx-who{ color:var(--paper-ink); font-weight:600; }
   .mini-btn{
     border:1px solid var(--paper-line); background:transparent; color:var(--paper-ink);
     font-family:'IBM Plex Mono', monospace; font-size:11px;
@@ -293,6 +301,26 @@
   }
   #send-btn:hover{ background:#1A232C; transform:scale(1.05); }
   #send-btn svg{ width:14px; height:14px; }
+
+  /* ---------- LIGHT MODE (map + chrome; panels are paper already) ---------- */
+  body.light{ --ink:#E6E1D3; }
+  body.light #brand{ color:#1B1A17; }
+  body.light #brand .sub{ color:#6d757d; border-left-color:#C4BCA6; }
+  body.light #board-toggle{ border-color:#C4BCA6; color:#1B1A17; }
+  body.light #theme-toggle{ border-color:#C4BCA6; color:#1B1A17; }
+  body.light #legend{ color:#5B6B7A; }
+  body.light #loc-line{ color:#5B6B7A; }
+  body.light .msg.user{ background:#10161C; color:#F0EDE4; }
+  body.light #board-add button{ background:#10161C; }
+  body.light #send-btn{ background:#10161C; }
+  #theme-toggle{
+    pointer-events:auto; cursor:pointer;
+    margin-left:8px; border:1px solid #34404B; background:transparent;
+    color:#EDEAE2; font-family:'IBM Plex Mono', monospace; font-size:11px;
+    padding:6px 10px; border-radius:999px;
+    transition: border-color .2s ease, color .2s ease;
+  }
+  #theme-toggle:hover{ border-color:var(--amber); color:var(--amber); }
 </style>
 </head>
 <body>
@@ -301,10 +329,12 @@
   <div id="map-layer"><div id="map"></div></div>
 
   <div id="brand">
-    <div class="mark">Rx</div>
+    <img class="mark-img" src="/static/logo.png" alt="AgentRx logo" />
     <div class="word">AgentRx</div>
     <div class="sub">prescription finder</div>
+    <div class="sub" id="mock-badge" style="display:none;border-color:#7FA37D;color:#7FA37D;">mock calls</div>
     <button id="board-toggle" aria-label="Toggle shortage board">📋 board</button>
+    <button id="theme-toggle" aria-label="Toggle light mode" title="Toggle light / dark">☀️</button>
   </div>
 
   <div id="board-panel">
@@ -334,7 +364,7 @@
     <div id="chat-panel">
       <div id="chat-header">
         <div class="id">
-          <div class="mark">Rx</div>
+          <img class="mark-img" src="/static/logo.png" alt="AgentRx logo" />
           <div class="titles">
             <div class="t1">AgentRx</div>
             <div class="t2">Prescription finder</div>
@@ -365,7 +395,7 @@
     </div>
 
     <button id="chat-tab">
-      <span class="tab-mark">Rx</span>
+      <img class="tab-mark-img" src="/static/logo.png" alt="" />
       <span>Ask AgentRx</span>
       <span class="tab-status"></span>
     </button>
@@ -373,6 +403,6 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

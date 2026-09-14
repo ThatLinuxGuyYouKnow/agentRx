@@ -6,7 +6,13 @@ UI:   http://localhost:8000/
 
 from __future__ import annotations
 
+import logging
 import os
+
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("AGENTRX_LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -104,6 +110,15 @@ class EmailSummaryRequest(BaseModel):
     summary: str = ""
 
 
+@app.get("/api/calls/{call_id}/transcript")
+def api_transcript(call_id: str):
+    """Transcript text for the in-app viewer (mock dialogue or live turns)."""
+    from services import calle as calle_mod
+
+    text = calle_mod.get_transcript_text(call_id)
+    if text is None:
+        raise HTTPException(404, "transcript not available")
+    return {"call_id": call_id, "transcript": text}
 @app.post("/api/email-summary")
 def api_email_summary(req: EmailSummaryRequest):
     """Email the comparison summary to the user/caregiver (needs SMTP_* env)."""
@@ -238,10 +253,14 @@ def api_board(org_id: str = "demo-org"):
 @app.get("/api/config")
 def api_config():
     """Public client config (CARTO key is a usage-tracked basemap key, not a secret)."""
+    from services.calle import force_mock
+
+    mocked = force_mock()
     calle_key = os.environ.get("CALLE_API_KEY") or os.environ.get("CALL_E_API_KEY")
     return {
         "cartoApiKey": os.environ.get("CARTO_API_KEY", ""),
-        "calleMode": "live" if calle_key else "mock",
+        "calleMode": "mock" if (mocked or not calle_key) else "live",
+        "mock": mocked,
         "demoStorefront": bool(os.environ.get("DEMO_STOREFRONT_PHONE")),
     }
 

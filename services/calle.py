@@ -15,6 +15,7 @@ Call script (per spec):
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import time
 import uuid
@@ -22,6 +23,8 @@ import uuid
 import requests
 
 from agent.models import CheckResult, Pharmacy
+
+logger = logging.getLogger("agentRx.calle")
 
 CALL_SCRIPT_TEMPLATE = (
     "Hi, calling to check availability and cash price for {drug} {strength}, "
@@ -57,19 +60,42 @@ def _region_for(phone: str) -> str:
 
 _mock_store: dict[str, dict] = {}
 
+# Demo comparison spread: deterministic per pharmacy+drug so takes are stable,
+# varied enough that price x distance x pickup trade-offs show in the table.
+MOCK_PICKUPS = ["today by 5pm", "tomorrow 9am", "within the hour", "today by 8pm"]
+
 
 def build_script(drug: str, strength: str, qty: int) -> str:
-    return CALL_SCRIPT_TEMPLATE.format(drug=drug, strength=strength, qty=qty)
+    label = f"{(drug or '').strip()} {(strength or '').strip()}".strip()
+    return (
+        f"Hi, calling to check availability and cash price for {label}, "
+        f"quantity {qty}, no insurance, for pickup today?"
+    )
 
 
 def _mock_result(call_id: str) -> CheckResult:
     entry = _mock_store[call_id]
     ph: Pharmacy = entry["pharmacy"]
+    if mock_oos_for(entry["drug"]):
+        logger.info(
+            "CALL-E mock forced OOS (AGENTRX_MOCK_OOS): drug=%r pharmacy_id=%s",
+            entry["drug"], ph.pharmacy_id,
+        )
+        return CheckResult(
+            pharmacy=ph,
+            in_stock=False,
+            price=None,
+            pickup_time=None,
+            transcript_url=f"mock://transcript/{call_id}",
+            call_id=call_id,
+            call_status="completed",
+            raw_notes="mock CALL-E result (forced out-of-stock demo)",
+        )
     # Deterministic pseudo-random per pharmacy+drug so demos are stable.
     seed = int(hashlib.md5(f"{ph.pharmacy_id}|{entry['drug']}".encode()).hexdigest()[:8], 16)
     in_stock = (seed % 4) != 0  # ~75% in stock; some OOS for realism
     price = round(8 + (seed % 4000) / 100.0, 2) if in_stock else None
-    pickup = "today by 5pm" if in_stock else None
+    pickup = MOCK_PICKUPS[seed % len(MOCK_PICKUPS)] if in_stock else None
     return CheckResult(
         pharmacy=ph,
         in_stock=in_stock,
@@ -86,8 +112,39 @@ def _base_url() -> str:
     return os.environ.get("CALLE_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
 
 
+def force_mock() -> bool:
+    """Demo override: AGENTRX_MOCK=1 forces mock calls even with live keys set."""
+    return os.environ.get("AGENTRX_MOCK", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _api_key() -> str | None:
+    if force_mock():
+        return None
     return os.environ.get("CALLE_API_KEY") or os.environ.get("CALL_E_API_KEY")
+
+
+def mock_oos_for(drug: str) -> bool:
+    """Demo override: AGENTRX_MOCK_OOS='drugA,drugB' forces those mock results
+    out-of-stock (substring match) so the handoff path is demoable on demand."""
+    needles = [
+        n.strip().lower()
+        for n in os.environ.get("AGENTRX_MOCK_OOS", "").split(",")
+        if n.strip()
+    ]
+    hay = (drug or "").lower()
+    return any(n in hay for n in needles)
+
+
+def _mode() -> str:
+    return "live" if _api_key() else "mock"
+
+
+def _body_snippet(resp: requests.Response, limit: int = 500) -> str:
+    try:
+        text = resp.text
+    except Exception:
+        return "<unreadable body>"
+    return text[:limit]
 
 
 def _build_task(drug: str, strength: str, qty: int) -> str:
@@ -103,7 +160,13 @@ def _build_task(drug: str, strength: str, qty: int) -> str:
 
 def place_stock_call(pharmacy: Pharmacy, drug: str, strength: str, qty: int) -> str:
     """Place one stock-check call. Returns call_id."""
+    label = f"{(drug or '').strip()} {(strength or '').strip()}".strip()
     if not _api_key():
+        logger.info(
+            "CALL-E mock place call%s: pharmacy_id=%s drug=%r qty=%s",
+            " (forced by AGENTRX_MOCK)" if force_mock() else " (no API key)",
+            pharmacy.pharmacy_id, label, qty,
+        )
         script = build_script(drug, strength, qty)
         call_id = f"mock-{uuid.uuid4().hex[:8]}"
         _mock_store[call_id] = {
@@ -114,32 +177,71 @@ def place_stock_call(pharmacy: Pharmacy, drug: str, strength: str, qty: int) -> 
             "script": script,
             "placed_at": time.time(),
         }
+        logger.info("CALL-E mock call placed: call_id=%s", call_id)
         return call_id
-    resp = requests.post(
-        f"{_base_url()}/v1/calls",
-        headers={
-            "Authorization": f"Bearer {_api_key()}",
-            "Idempotency-Key": f"agentrx-{pharmacy.pharmacy_id}-{uuid.uuid4().hex[:12]}",
-        },
-        json={
-            "task": _build_task(drug, strength, qty),
-            "recipients": [
-                {
-                    "phones": [pharmacy.phone],
-                    "region": _region_for(pharmacy.phone),
-                    "locale": "en-US",
-                }
-            ],
-            "result_schema": RESULT_SCHEMA,
-            "metadata": {"pharmacy_id": pharmacy.pharmacy_id},
-        },
-        timeout=30,
+    url = f"{_base_url()}/v1/calls"
+    region = _region_for(pharmacy.phone)
+    payload = {
+        "task": _build_task(drug, strength, qty),
+        "recipients": [
+            {
+                "phones": [pharmacy.phone],
+                "region": region,
+                "locale": "en-US",
+            }
+        ],
+        "result_schema": RESULT_SCHEMA,
+        "metadata": {"pharmacy_id": pharmacy.pharmacy_id},
+    }
+    # NOTE: the API key is sent here but never logged (only its presence).
+    logger.info(
+        "CALL-E live POST %s: pharmacy_id=%s phone=%s region=%s drug=%r qty=%s",
+        url, pharmacy.pharmacy_id, pharmacy.phone, region, label, qty,
     )
-    resp.raise_for_status()
+    try:
+        resp = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {_api_key()}",
+                "Idempotency-Key": f"agentrx-{pharmacy.pharmacy_id}-{uuid.uuid4().hex[:12]}",
+            },
+            json=payload,
+            timeout=30,
+        )
+    except requests.RequestException:
+        logger.exception(
+            "CALL-E live POST failed (no response): pharmacy_id=%s phone=%s",
+            pharmacy.pharmacy_id, pharmacy.phone,
+        )
+        raise
+    if resp.status_code in (401, 403):
+        logger.error(
+            "CALL-E live POST %s: pharmacy_id=%s (auth rejected)",
+            resp.status_code, pharmacy.pharmacy_id,
+        )
+    elif resp.status_code >= 400:
+        logger.error(
+            "CALL-E live POST %s: pharmacy_id=%s phone=%s body=%s",
+            resp.status_code, pharmacy.pharmacy_id, pharmacy.phone,
+            _body_snippet(resp),
+        )
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError:
+        logger.exception(
+            "CALL-E live POST raise_for_status: pharmacy_id=%s status=%s",
+            pharmacy.pharmacy_id, resp.status_code,
+        )
+        raise
     data = resp.json()
     call_id = data.get("call_id") or data.get("id")
     if not call_id:
+        logger.error("CALL-E create call returned no call_id: %s", str(data)[:500])
         raise ValueError(f"CALL-E create call returned no call_id: {data}")
+    logger.info(
+        "CALL-E live call placed: pharmacy_id=%s call_id=%s",
+        pharmacy.pharmacy_id, call_id,
+    )
     return str(call_id)
 
 
@@ -168,12 +270,40 @@ def _transcript_url(data: dict, call_id: str) -> str | None:
     return f"calle://{call_id}\n" + "\n".join(lines)
 
 
-def get_call_result(call_id: str, timeout_s: int = 300, poll_s: int = 10) -> CheckResult:
-    """Poll until terminal result. Mock returns immediately."""
+def _mock_transcript_text(entry: dict, res: CheckResult) -> str:
+    """Demo dialogue for the in-app transcript viewer (Agent: / Pharmacy:)."""
+    label = f"{entry.get('drug', '')} {entry.get('strength', '')}".strip()
+    lines = [f"Agent: {entry.get('script', '')}"]
+    if res.in_stock:
+        lines.append(f"Pharmacy: Yes, we have {label} in stock.")
+        lines.append("Agent: And the cash price, no insurance?")
+        lines.append(
+            f"Pharmacy: ${res.price:.2f}." if res.price is not None
+            else "Pharmacy: I'd have to check at the counter — no price by phone."
+        )
+        lines.append("Agent: When could it be ready for pickup?")
+        lines.append(
+            f"Pharmacy: {res.pickup_time}." if res.pickup_time
+            else "Pharmacy: Probably later today — call back to confirm."
+        )
+    else:
+        lines.append(f"Pharmacy: Sorry, we don't have {label} in stock right now.")
+        lines.append("Agent: Thanks — we'll check elsewhere. Goodbye!")
+    return "\n".join(lines)
+
+
+def get_transcript_text(call_id: str) -> str | None:
+    """Best-effort transcript text for UI display.
+
+    Mock: synthesized Agent:/Pharmacy: dialogue (instant). Live: single fetch
+    of recorded turns (no polling); None when unavailable.
+    """
     if call_id in _mock_store:
-        return _mock_result(call_id)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+        entry = _mock_store[call_id]
+        return _mock_transcript_text(entry, _mock_result(call_id))
+    if not _api_key():
+        return None
+    try:
         resp = requests.get(
             f"{_base_url()}/v1/calls/{call_id}",
             headers={"Authorization": f"Bearer {_api_key()}"},
@@ -181,12 +311,65 @@ def get_call_result(call_id: str, timeout_s: int = 300, poll_s: int = 10) -> Che
         )
         resp.raise_for_status()
         data = resp.json()
+    except Exception:
+        logger.warning("transcript fetch failed: call_id=%s", call_id, exc_info=True)
+        return None
+    turns = []
+    for rec in data.get("recipients") or []:
+        for attempt in rec.get("attempts") or []:
+            turns.extend(attempt.get("transcript_turns") or [])
+    if not turns:
+        return None
+    out = []
+    for t in turns:
+        who = "Agent" if str(t.get("speaker", "")).lower() == "bot" else "Pharmacy"
+        out.append(f"{who}: {t.get('text', '')}")
+    return "\n".join(out)
+
+
+def get_call_result(call_id: str, timeout_s: int = 300, poll_s: int = 10) -> CheckResult:
+    """Poll until terminal result. Mock returns immediately."""
+    if call_id in _mock_store:
+        logger.info("CALL-E mock result fetch: call_id=%s", call_id)
+        return _mock_result(call_id)
+    url = f"{_base_url()}/v1/calls/{call_id}"
+    logger.info("CALL-E live poll start: call_id=%s timeout_s=%s", call_id, timeout_s)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            resp = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {_api_key()}"},
+                timeout=30,
+            )
+        except requests.RequestException:
+            logger.exception("CALL-E live poll failed (no response): call_id=%s", call_id)
+            raise
+        if resp.status_code >= 400:
+            logger.error(
+                "CALL-E live poll %s: call_id=%s body=%s",
+                resp.status_code, call_id, _body_snippet(resp),
+            )
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError:
+            logger.exception(
+                "CALL-E live poll raise_for_status: call_id=%s status=%s",
+                call_id, resp.status_code,
+            )
+            raise
+        data = resp.json()
         status = str(data.get("status", "")).lower()
+        logger.debug("CALL-E live poll status: call_id=%s status=%r", call_id, status)
         if status in ("completed", "failed", "no-answer", "busy", "cancelled"):
             in_stock, price, pickup = _parse_result_schema(data)
             notes = data.get("evidence") or []
             if isinstance(notes, list):
                 notes = " | ".join(str(n) for n in notes)
+            logger.info(
+                "CALL-E live result: call_id=%s status=%s in_stock=%s price=%s pickup=%r",
+                call_id, status, in_stock, price, pickup,
+            )
             return CheckResult(
                 pharmacy=data.get("pharmacy") or _unknown_pharmacy(call_id),
                 in_stock=in_stock,
@@ -198,6 +381,7 @@ def get_call_result(call_id: str, timeout_s: int = 300, poll_s: int = 10) -> Che
                 raw_notes=str(notes or ""),
             )
         time.sleep(poll_s)
+    logger.error("CALL-E live poll timeout: call_id=%s after %ss", call_id, timeout_s)
     raise TimeoutError(f"CALL-E result not ready for {call_id} after {timeout_s}s")
 
 

@@ -6,11 +6,19 @@ Run:  ~/myvenv/bin/python -m streamlit run app.py
 from __future__ import annotations
 
 import datetime as dt
+import logging
+import os
+
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("AGENTRX_LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 import streamlit as st
 
 from agent.orchestrator import DISCLAIMER, run_search
 from services import reminders as reminder_svc
+from services.calle import get_transcript_text
 
 st.set_page_config(page_title="agentRx", layout="wide")
 st.title("agentRx - nearby pharmacy stock + cash price check")
@@ -53,10 +61,12 @@ if outcome:
     st.table(rows)
     with st.expander("Call transcripts / details"):
         for r in outcome.results:
-            st.markdown(
-                f"**{r.pharmacy.name}** - `{r.call_id}` - "
-                f"[transcript]({r.transcript_url}) - {r.raw_notes}"
-            )
+            st.markdown(f"**{r.pharmacy.name}** - `{r.call_id}` - {r.raw_notes}")
+            t = get_transcript_text(r.call_id) if r.call_id.startswith("mock-") else None
+            if t:
+                st.text(t)
+            elif r.transcript_url:
+                st.markdown(f"[transcript]({r.transcript_url})")
     st.caption(DISCLAIMER)
 
 st.divider()

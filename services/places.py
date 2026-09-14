@@ -28,6 +28,8 @@ import requests
 
 from agent.models import Pharmacy
 
+from services.calle import force_mock
+
 MIN_RATING = 4.0
 MIN_RATINGS_TOTAL = 50
 RELAXED_RATING = 3.5
@@ -85,7 +87,7 @@ def _passes_filter(rating: float, total: int, open_now: bool) -> bool:
     return rating >= MIN_RATING and total > MIN_RATINGS_TOTAL and open_now
 
 
-def _mock(lat: float, lng: float) -> list[Pharmacy]:
+def _mock(lat: float, lng: float, delivery: bool = False) -> list[Pharmacy]:
     out = []
     for m in MOCK_PHARMACIES:
         plat, plng = lat + m["lat_offset"], lng + m["lng_offset"]
@@ -101,6 +103,7 @@ def _mock(lat: float, lng: float) -> list[Pharmacy]:
                 lat=plat,
                 lng=plng,
                 distance_km=round(_haversine_km(lat, lng, plat, plng), 2),
+                delivery=delivery,  # mirrors live text-search behavior (likely, not guaranteed)
             )
         )
     return [p for p in out if _passes_filter(p.rating, p.user_ratings_total, p.open_now)][:3]
@@ -227,15 +230,20 @@ def _demo_storefront(lat: float, lng: float) -> Pharmacy | None:
 def find_pharmacies(
     lat: float, lng: float, radius_km: float = 5, delivery: bool = False
 ) -> list[Pharmacy]:
-    """Top-3 reputable open pharmacies within radius_km. Mock if no API key."""
+    """Top-3 reputable open pharmacies within radius_km.
+
+    Mock if no API key or AGENTRX_MOCK=1 (demo override: mock even with keys).
+    """
     demo = _demo_storefront(lat, lng)
-    if not os.environ.get("GOOGLE_PLACES_API_KEY"):
-        found = _mock(lat, lng)
+    if force_mock():
+        found = _mock(lat, lng, delivery)
+    elif not os.environ.get("GOOGLE_PLACES_API_KEY"):
+        found = _mock(lat, lng, delivery)
     else:
         try:
             found = _live(lat, lng, radius_km, delivery)
         except Exception:
-            found = _mock(lat, lng)  # fail soft: demo continues
+            found = _mock(lat, lng, delivery)  # fail soft: demo continues
     if demo is not None:
         found = [demo] + [p for p in found if p.pharmacy_id != demo.pharmacy_id][:2]
     return found

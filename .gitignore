@@ -3,3 +3,4 @@ __pycache__/
 agentrx.db
 .env
 .venv/
+deck/

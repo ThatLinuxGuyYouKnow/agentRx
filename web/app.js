@@ -13,6 +13,7 @@
   var candidates = [];         // pharmacy dicts
   var selected = {};           // pharmacy_id -> true
   var awaitingEmail = false;
+  var callInFlight = false; // guard: one call batch at a time (live calls cost money)
   var emailSubject = '';       // drug label for the email
   var lastResults = null;
   var threadId = null;
@@ -41,13 +42,41 @@
 
   var map = L.map('map', { zoomControl: false }).setView([userLoc.lat, userLoc.lng], 14);
   L.control.zoom({ position: 'topright' }).addTo(map);
-  var tileLayer = L.tileLayer('https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png', {
+  var TILES = {
+    dark: 'https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png',
+    light: 'https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png',
+  };
+  var cartoKey = '';
+  var theme = 'dark';
+  try { theme = localStorage.getItem('agentrx_theme') || 'dark'; } catch (e) { theme = 'dark'; }
+  if (theme !== 'light') theme = 'dark';
+  function tileUrl(mode) { return TILES[mode] + (cartoKey ? '?key=' + cartoKey : ''); }
+  function setTheme(mode) {
+    theme = mode;
+    document.body.classList.toggle('light', mode === 'light');
+    if (typeof tileLayer !== 'undefined') tileLayer.setUrl(tileUrl(mode));
+    var t = document.getElementById('theme-toggle');
+    if (t) t.textContent = mode === 'light' ? '🌙' : '☀️';
+    try { localStorage.setItem('agentrx_theme', mode); } catch (e) {}
+  }
+  document.body.classList.toggle('light', theme === 'light');
+
+  var tileLayer = L.tileLayer(tileUrl(theme), {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
     maxZoom: 20,
   }).addTo(map);
+  document.getElementById('theme-toggle').addEventListener('click', function () {
+    setTheme(theme === 'light' ? 'dark' : 'light');
+  });
+  setTheme(theme); // sync toggle icon with stored theme
   fetch('/api/config').then(function (r) { return r.json(); }).then(function (cfg) {
     if (cfg && cfg.cartoApiKey) {
-      tileLayer.setUrl('https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=' + cfg.cartoApiKey);
+      cartoKey = cfg.cartoApiKey;
+      tileLayer.setUrl(tileUrl(theme));
+    }
+    if (cfg && (cfg.mock || cfg.calleMode === 'mock')) {
+      var badge = document.getElementById('mock-badge');
+      if (badge) badge.style.display = '';
     }
   }).catch(function () {});
 
@@ -316,8 +345,10 @@
   }
 
   function goCall() {
+    if (callInFlight) return; // ignore double-taps while a batch is in flight
     var list = selectedList();
     if (!list.length) { addAgentBubble('Select at least one pharmacy first.', true); return; }
+    callInFlight = true;
     addUserMessage('✓ Approved — calling ' + list.length + ' pharmac' + (list.length > 1 ? 'ies' : 'y'));
     var typing = showTyping();
     fetch('/api/check', {
@@ -332,26 +363,95 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         typing.remove();
+        callInFlight = false;
         lastResults = data.results || [];
         addAgentBubble(renderResults(pendingDrug.raw, data), data.needs_human);
         drawResults(lastResults);
       })
       .catch(function () {
         typing.remove();
+        callInFlight = false;
         addAgentBubble('Calls failed — check the server and try again.', true);
       });
+  }
+
+  function priceOf(r) { return r.price != null ? '$' + r.price.toFixed(2) : null; }
+
+  // Coordinator-style summary: verdict first, then the follow-up question.
+  function summaryLine(drugLabel, data) {
+    var results = data.results || [];
+    var inStock = results.filter(function (r) { return r.in_stock; });
+    if (!results.length) {
+      return 'I couldn\'t reach any pharmacy for <strong>' + esc(drugLabel) + '</strong>. ' +
+        'Try a wider radius — or call your pharmacist directly.';
+    }
+    if (inStock.length) {
+      var best = inStock[0]; // cheapest in-stock first (server-sorted)
+      var detail = priceOf(best) || 'price unknown';
+      if (best.pickup_time) detail += ', ready ' + esc(best.pickup_time);
+      var others = inStock.slice(1).map(function (r) {
+        var bits = priceOf(r) || 'price unknown';
+        if (r.pickup_time) bits += ' · ' + esc(r.pickup_time);
+        return esc(r.pharmacy.name) + ' (' + bits + ')';
+      }).join(', ');
+      var out = inStock.length > 1
+        ? 'Good news — <strong>' + inStock.length + ' pharmacies</strong> have <strong>' + esc(drugLabel) + '</strong> in stock. '
+        : 'Good news! ';
+      out += '<strong>' + esc(best.pharmacy.name) + '</strong> has <strong>' + esc(drugLabel) + '</strong> in stock at ' + detail + '.';
+      if (others) out += '<div class="meta">Also in stock: ' + others + '.</div>';
+      if (inStock.length > 1) {
+        var closest = inStock.slice().sort(function (a, b) {
+          return a.pharmacy.distance_km - b.pharmacy.distance_km;
+        })[0];
+        var cmp = 'Cheapest: ' + esc(best.pharmacy.name) + (priceOf(best) ? ' (' + priceOf(best) + ')' : '');
+        if (closest.pharmacy.name !== best.pharmacy.name) {
+          cmp += ' · Closest: ' + esc(closest.pharmacy.name) + ' (' + closest.pharmacy.distance_km + ' km)';
+        }
+        var deliv = inStock.filter(function (r) { return r.pharmacy.delivery; }).map(function (r) {
+          return esc(r.pharmacy.name);
+        });
+        if (deliv.length) cmp += ' · 🛵 likely delivery: ' + deliv.join(', ');
+        out += '<div class="meta">⚖️ ' + cmp + '.</div>';
+      }
+      var oos = results.length - inStock.length;
+      if (oos) out += '<div class="meta">Out of stock at ' + oos + ' other' + (oos > 1 ? 's' : '') + '.</div>';
+      out += followUp(best, drugLabel);
+      return out;
+    }
+    var head = results.length > 1
+      ? 'None of the ' + results.length + ' pharmacies checked have'
+      : 'The pharmacy checked doesn\'t have';
+    return head + ' <strong>' + esc(drugLabel) + '</strong> right now. ' +
+      'I\'d keep the refill reminder set and watch this drug — I\'ll flag it on the shortage board when it comes back.';
+  }
+
+  function followUp(best, drugLabel) {
+    var phone = best && best.pharmacy && best.pharmacy.phone;
+    var out = '<div style="margin-top:8px">Want to follow up? ';
+    if (phone) {
+      out += 'Call them directly at <a href="tel:' + esc(phone.replace(/\s/g, '')) + '">' + esc(phone) + '</a> to confirm and arrange pickup';
+      if (best.pharmacy.delivery) out += ' — 🛵 delivery looks likely there, ask about it when you call';
+      out += '. ';
+    } else {
+      out += 'Call the pharmacy to confirm and arrange pickup. ';
+    }
+    out += 'Or tap below and I\'ll set a reminder, email you this list, or watch <strong>' + esc(drugLabel) + '</strong> for you.</div>';
+    return out;
   }
 
   function renderResults(drugLabel, data) {
     var rows = data.results.map(function (r) {
       var s = statusOf(r);
-      var price = r.price != null ? '$' + r.price.toFixed(2) : '—';
+      var price = priceOf(r) || '—';
       var sub = statusLabel(r) + ' · ' + price + (r.pickup_time ? ' · ' + esc(r.pickup_time) : '');
+      var tx = r.call_id
+        ? '<div class="r2"><button class="mini-btn" data-act="transcript" data-call-id="' + esc(r.call_id) + '" title="' + esc(r.call_id) + '">transcript</button></div>' +
+          '<div class="tx" style="display:none"></div>'
+        : '';
       return '<div class="result"><div class="r1"><div class="left">' +
         '<span class="status-dot ' + s + '"></span><span class="name">' + esc(r.pharmacy.name) + '</span></div>' +
         '<span class="dist">' + r.pharmacy.distance_km + ' km</span></div>' +
-        '<div class="meta">' + sub + '</div>' +
-        (r.transcript_url ? '<div class="r2"><a class="meta" style="color:#8a5a1d" href="' + esc(r.transcript_url) + '" target="_blank">transcript ' + esc(r.call_id) + '</a></div>' : '') +
+        '<div class="meta">' + sub + '</div>' + tx +
         '</div>';
     }).join('');
     var warn = data.needs_human
@@ -359,9 +459,11 @@
       : '';
     return 'Called ' + data.results.length + ' pharmac' + (data.results.length > 1 ? 'ies' : 'y') +
       ' for <strong>' + esc(drugLabel) + '</strong>.' +
+      '<div style="margin-top:8px">' + summaryLine(drugLabel, data) + '</div>' +
       '<div class="result-list">' + rows + '</div>' + warn +
       '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
       '<button class="mini-btn" data-act="remind">Set refill reminder</button>' +
+      '<button class="mini-btn" data-act="watch-drug">👁 Watch this drug</button>' +
       '<button class="mini-btn" data-act="go-email">✉️ Email me results</button></div>' +
       '<div class="disclaimer" style="margin-top:8px">' + esc(data.disclaimer || '') + '</div>';
   }
@@ -568,6 +670,52 @@
       fetch('/api/reminders/' + btn.dataset.id, { method: 'DELETE' }).then(function () {
         btn.closest('.result').remove();
       });
+      return;
+    }
+    if (btn.dataset.act === 'watch-drug' && pendingDrug) {
+      fetch('/api/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_id: ORG_ID, drug: pendingDrug.drug,
+          strength: pendingDrug.strength || '', qty: pendingDrug.qty || 30,
+        }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+          addAgentBubble('Watching <strong>' + esc(pendingDrug.raw) + '</strong> — find it on the 📋 board, and re-check anytime from there.');
+        })
+        .catch(function () { addAgentBubble('Couldn\'t add the watch — try again.', true); });
+      return;
+    }
+    if (btn.dataset.act === 'transcript') {
+      var box = btn.closest('.result').querySelector('.tx');
+      if (!box) return;
+      if (box.dataset.loaded) {
+        box.style.display = box.style.display === 'none' ? '' : 'none';
+        return;
+      }
+      box.textContent = 'loading…';
+      box.style.display = '';
+      fetch('/api/calls/' + encodeURIComponent(btn.dataset.callId) + '/transcript')
+        .then(function (res) {
+          return res.json().then(function (j) { return { ok: res.ok, j: j }; });
+        })
+        .then(function (x) {
+          box.dataset.loaded = '1';
+          if (x.ok && x.j && x.j.transcript) {
+            box.innerHTML = String(x.j.transcript).split('\n').map(function (line) {
+              var m = line.match(/^(Agent|Pharmacy):\s?(.*)$/);
+              var who = m ? m[1] : '', what = m ? m[2] : line;
+              return '<div class="tx-turn"><span class="tx-who">' + esc(who) +
+                (who ? ': ' : '') + '</span>' + esc(what) + '</div>';
+            }).join('');
+          } else {
+            box.textContent = 'Transcript unavailable.';
+          }
+        })
+        .catch(function () { box.textContent = 'Transcript unavailable.'; });
+      return;
     }
   });
 

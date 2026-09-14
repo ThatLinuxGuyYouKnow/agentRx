@@ -20,6 +20,16 @@ cp .env.example .env
 
 Mock mode (no keys set): deterministic mock pharmacies + mock CALL-E
 results. For the video: replace the 3rd mock number with your own phone.
+Demo override: `AGENTRX_MOCK=1` forces mock pharmacies + mock calls even
+with live keys set — any drug returns a demo response, and selecting just
+the demo storefront calls only it. `AGENTRX_MOCK_OOS=<substr>` forces those
+drugs out-of-stock in mock mode to demo the human handoff. Watchlist
+re-checks go through the same `/api/check` path, so they mock too. Mock
+results vary price/pickup per pharmacy (deterministic per drug) so
+multi-pharmacy checks demo the cheapest/closest/delivery comparison;
+toggling delivery in chat flags mock candidates 🛵 too. Useful
+where CALL-E has no coverage (e.g. Nigeria +234 is not in their 22
+supported countries, so live calls 422).
 
 ## Going live (spend only here)
 

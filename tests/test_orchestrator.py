@@ -1,8 +1,10 @@
 """Orchestrator: fan-out/fan-in + handoff paths."""
 
+import logging
+
 from agent import tools
 from agent.models import Pharmacy, SearchOutcome
-from agent.orchestrator import run_search
+from agent.orchestrator import check_stock, run_search
 
 
 def _pharm(i: int) -> Pharmacy:
@@ -50,3 +52,28 @@ def test_no_pharmacies_handoff(monkeypatch):
     monkeypatch.setattr(tools, "find_pharmacies", lambda *a, **k: [])
     out = run_search("atorvastatin", "20mg", 30, 40.0, -74.0)
     assert out.needs_human
+
+
+def test_place_failures_logged_and_surfaced(monkeypatch, caplog):
+    def boom(pid, *a):
+        raise RuntimeError("400 Bad Request (bad phone)")
+    monkeypatch.setattr(tools, "place_stock_call", boom)
+    with caplog.at_level(logging.WARNING, logger="agentRx.orchestrator"):
+        out = check_stock("paracetamol", "", 30, [_pharm(1)])
+    assert out.needs_human
+    assert out.handoff_reason.startswith("all calls failed to place")
+    assert "400 Bad Request" in out.handoff_reason  # cause visible in UI/API
+    assert any("place_stock_call failed" in r.message for r in caplog.records)
+
+
+def test_result_failures_logged_and_surfaced(monkeypatch, caplog):
+    monkeypatch.setattr(tools, "place_stock_call", lambda pid, *a: "c1")
+    def boom(cid):
+        raise TimeoutError("CALL-E result not ready")
+    monkeypatch.setattr(tools, "get_call_result", boom)
+    with caplog.at_level(logging.WARNING, logger="agentRx.orchestrator"):
+        out = check_stock("paracetamol", "", 30, [_pharm(1)])
+    assert out.needs_human
+    assert out.handoff_reason.startswith("all calls failed")
+    assert "not ready" in out.handoff_reason
+    assert any("get_call_result failed" in r.message for r in caplog.records)
